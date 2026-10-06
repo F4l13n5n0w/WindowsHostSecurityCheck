@@ -1,0 +1,5 @@
+HostSecurityReport/
+tests/artifacts/
+
+# Optional upstream security reference; not required at runtime.
+reference/winPEAS.ps1.txt

@@ -1,0 +1,4 @@
+https://github.com/GhostPack/Seatbelt
+https://github.com/itm4n/PrivescCheck
+https://www.ired.team/offensive-security/enumeration-and-discovery
+https://www.ired.team/offensive-security/privilege-escalation
