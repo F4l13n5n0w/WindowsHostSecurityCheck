@@ -68,7 +68,7 @@
     Windows Update Agent may contact the configured update service unless
     -SkipWindowsUpdateScan is specified.
 
-    Version 2.3 adds finding-specific verification commands and task execution context
+    Version 2.4 adds executed verification transcripts to refreshed reports
     and adds conditional exploitation context to HTML, JSON, and TXT findings.
     ACL findings identify broad allow entries, not complete effective access.
 
@@ -1044,6 +1044,43 @@ function New-AssessmentText {
     return $Parts -join [Environment]::NewLine
 }
 
+function ConvertTo-VerificationResultHtml {
+    param($Result, [string]$Title)
+    if ($null -eq $Result) { return '<p class="hint">Verification has not been executed.</p>' }
+    $Builder = New-Object System.Text.StringBuilder
+    [void]$Builder.Append('<div class="verification-result"><strong>Executed verification: ' + (ConvertTo-HtmlText $Result.Status) + '</strong><p>' + (ConvertTo-HtmlText $Result.Explanation) + '</p>')
+    if ($Result.ExecutionContext) {
+        [void]$Builder.Append('<p class="hint">' + (ConvertTo-HtmlText ($Result.ExecutionContext.Host + ' | ' + $Result.ExecutionContext.User + ' | Elevated: ' + $Result.ExecutionContext.IsAdministrator)) + '</p>')
+    }
+    foreach ($Step in @($Result.Steps)) {
+        [void]$Builder.Append('<details class="verification-transcript"><summary>' + (ConvertTo-HtmlText ($Step.Name + ' - ' + $Step.Status)) + '</summary><div class="verification-body"><p>' + (ConvertTo-HtmlText $Step.Explanation) + '</p><p class="hint">' + (ConvertTo-HtmlText ($Step.StartedAt + ' | ' + $Step.DurationMilliseconds + ' ms')) + '</p>')
+        [void]$Builder.Append('<div class="terminal-label">Executed command</div><pre class="command"><code>' + (ConvertTo-HtmlText $Step.Command) + '</code></pre><button type="button" class="copy-command">Copy command</button>')
+        [void]$Builder.Append('<div class="terminal-label">Complete captured response (selected fields)</div><pre class="output"><code>')
+        if ([string]::IsNullOrEmpty([string]$Step.Output)) { [void]$Builder.Append('(No success-stream output)') }
+        $BroadRule = $false
+        foreach ($Line in [regex]::Split([string]$Step.Output, '\r\n|\n|\r')) {
+            $Encoded = ConvertTo-HtmlText $Line
+            if ($Line -match '"BroadWriteAllow"\s*:\s*(true|false)') { $BroadRule = $Matches[1] -eq 'true' }
+            $IssueLine = Test-EvidenceIssueLine -Title $Title -Line $Line
+            if ($Line -match '^\s*"Rights"\s*:') { $IssueLine = $BroadRule }
+            if ($IssueLine -or $Line -match '"(WriteOpenSucceeded|BroadWriteAllow)"\s*:\s*true') {
+                $Encoded = '<mark class="issue-highlight">' + $Encoded + '</mark>'
+            }
+            [void]$Builder.Append($Encoded + [Environment]::NewLine)
+        }
+        [void]$Builder.Append('</code></pre>')
+        foreach ($Stream in @('Errors','Warnings','Information','Verbose','Debug')) {
+            if (@($Step.$Stream).Count) {
+                [void]$Builder.Append('<div class="terminal-label">' + $Stream + '</div><pre class="output"><code>' + (ConvertTo-HtmlText (Convert-ToSafeString $Step.$Stream)) + '</code></pre>')
+            }
+        }
+        if ($Step.Failure) { [void]$Builder.Append('<p class="issue-observation">' + (ConvertTo-HtmlText $Step.Failure) + '</p>') }
+        [void]$Builder.Append('</div></details>')
+    }
+    [void]$Builder.Append('</div>')
+    return $Builder.ToString()
+}
+
 function New-AssessmentHtml {
     param([System.Collections.IDictionary]$Report)
     $Ranks = @{ Critical=0; High=1; Medium=2; Low=3; Informational=4 }
@@ -1065,11 +1102,14 @@ function New-AssessmentHtml {
         if ([string]::IsNullOrWhiteSpace($Steps)) {
             $Steps = Get-FindingVerificationSteps -Title $Finding.Finding -Category $Finding.Category -EvidenceData $Finding.EvidenceData -Command $Finding.Command
         }
+        $ResultProperty = $Finding.PSObject.Properties['VerificationResult']
+        $Result = if ($null -ne $ResultProperty) { $ResultProperty.Value } else { $null }
+        $ResultHtml = ConvertTo-VerificationResultHtml -Result $Result -Title $Finding.Finding
         if ([string]::IsNullOrWhiteSpace($Steps)) {
-            [void]$Rows.Append('<td class="verification-cell"><span class="hint">No additional privilege-escalation steps for this finding.</span></td>')
+            [void]$Rows.Append('<td class="verification-cell"><span class="hint">No additional privilege-escalation steps for this finding.</span>' + $ResultHtml + '</td>')
         } else {
             [void]$Rows.Append('<td class="verification-cell"><details><summary>Verification commands</summary><div class="verification-body"><div class="terminal-label">Next verification steps</div><pre class="command"><code>' +
-                (ConvertTo-HtmlText $Steps) + '</code></pre><button type="button" class="copy-command">Copy steps</button></div></details></td>')
+                (ConvertTo-HtmlText $Steps) + '</code></pre><button type="button" class="copy-command">Copy steps</button></div></details>' + $ResultHtml + '</td>')
         }
         [void]$Rows.Append('<td>' + (ConvertTo-HtmlText $Finding.Recommendation))
         if ($Finding.Reference -match '^https?://') {
@@ -1129,6 +1169,7 @@ pre.command{color:#a5e9c5}.terminal-label{background:#233951;color:#c4d7ec;font:
 @media print{.issue-highlight{color:#a31525;background:#fff1f2;border-color:#a31525}.evidence-command,.response-label{color:#172b4d}}
 .copy-command{font-size:12px;margin-top:7px}.data-table pre{overflow:auto;min-width:100px}.evidence-cell pre.output{max-height:none}.exploit-cell{min-width:280px;max-width:400px;white-space:pre-wrap}
 .verification-cell{min-width:300px;max-width:480px}.verification-cell summary{font-size:13px;padding:9px 12px;border:1px solid var(--border);border-radius:6px}.verification-body{padding-top:8px}.verification-cell pre{max-height:420px}
+.verification-result{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}.verification-transcript{margin-top:10px}.verification-result pre.output{max-height:none}.verification-result .terminal-label{margin-top:8px}
 #finding-count{color:var(--muted);margin-left:auto}.notice{border-left:3px solid #5c8dc8;padding-left:12px;color:var(--muted)}
 @media(max-width:760px){main{padding:14px}header{padding:20px}h1{font-size:23px}.stats{grid-template-columns:repeat(2,1fr)}input{min-width:170px}}
 @media print{.toolbar,nav,.copy-command{display:none}main{padding:0}header{background:white;color:black}.metadata{color:black}.table-scroll{overflow:visible}#findings-table{min-width:0}pre.command,pre.output{max-height:none;background:#fff;color:#000}.report-section{break-inside:auto}}
@@ -3963,7 +4004,7 @@ $Report = [ordered]@{
             "Windows Server Comprehensive Host Security Assessment"
 
         Version =
-            "2.3"
+            "2.4"
 
         Host =
             $ComputerName

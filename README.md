@@ -14,7 +14,23 @@ Omit **-SkipWindowsUpdateScan** to search for missing software updates through W
 
 Designed originally for Server 2022; client Windows checks now run when the corresponding APIs are available. Missing modules, permissions, or unsupported firmware can limit results. Windows PowerShell 5.1 has the broadest inbox-module compatibility. PowerShell 7 syntax and isolated tests are also checked, but module availability differs.
 
-## Report improvements in 2.3
+## Run verification on an existing report (2.4)
+
+Run the helper on the same Windows host as the original scan. Use a non-elevated session first when assessing access available to a standard user:
+
+~~~powershell
+.\tools\Update-ReportVerification.ps1 -InputJson 'C:\Temp\HostSecurityReport\your-report.json' -RunVerification -TimeoutSeconds 30
+~~~
+
+The helper regenerates JSON, TXT, HTML and hashes in a separate **with_verification** folder. Each finding gains a `VerificationResult`: the executed commands, full captured selected output, separate errors/warnings/information streams, timestamps, duration, execution identity and explanations. HTML places collapsible transcripts under **Next verification steps** and highlights relevant permission values and successful write-open results in red. Source evidence and severity remain intact; a completed check does not confirm exploitation or disprove the historical finding.
+
+Supported plans cover task/service permissions and execution context, autoruns, startup/PATH/DLL permissions, installer policies, current privileges, and local configuration findings such as Defender, firewall, SMB, UAC, logging and security policies. Commands come from the installed helper's maintained code; strings stored in report commands are never executed. Unsupported findings get an explicit explanation. A fresh Windows Update Agent search is excluded because it can contact an update service; rerun the main scan to refresh that finding. Missing modules, permission failures, empty responses and timeouts are recorded, with any partial output retained.
+
+The timeout is per command block (1–300 seconds), not the whole report. Verification may take several minutes on reports with many findings. Existing-file probes open a write handle and close it without writing bytes; no task/service action is changed or launched. Local password-policy checks use temporary secedit exports and clean them up. User-scoped results apply to the recorded verification user. Elevated write access is not evidence that a standard user can write. The helper checks `Metadata.Host` against the local computer name before execution.
+
+Omit **-RunVerification** to refresh suggested commands without executing checks. Older executed transcripts, if already present in the input, retain their original timestamps.
+
+## Report improvements
 
 - The sortable **Next verification steps** column includes finding-specific commands for services, scheduled tasks, autoruns, PATH/DLL checks, installer policy and sensitive user rights. Commands are collapsible, selectable and copyable; JSON/TXT retain the same `VerificationSteps` field.
 - Verification commands inspect identity, execution context and full permission entries. Existing-file write probes open and close a handle without writing bytes. Run them in a non-elevated session and paste each complete `try/catch/finally` block together. Directory and registry ACL observations do not prove effective write access.
@@ -38,7 +54,7 @@ Designed originally for Server 2022; client Windows checks now run when the corr
 
 Commands are for the same machine and execution identity. Some need elevation or optional modules. Policy-review commands create and clean up a temporary export. Missing registry settings may produce an error when a command is repeated; that differs from an explicit disabled value.
 
-Full evidence means all already-selected collection fields and records, not every property exposed by the OS or a command transcript. Commands are not rerun to collect evidence. Credential collection exclusions still apply. Serialization uses a depth limit of 100 and treats serialization warnings as errors rather than silently dropping deep data. Large reports can consume more memory and take longer to render.
+Full scan evidence means all already-selected collection fields and records, not every property exposed by the OS or a command transcript. The main scan does not rerun displayed commands; the verification helper separately records actual executed commands and responses when **-RunVerification** is supplied. Credential collection exclusions still apply. Serialization uses a depth limit of 100 and treats serialization warnings as errors rather than silently dropping deep data. Large reports can consume more memory and take longer to render.
 
 Abuse descriptions explain conditional mechanisms; the script does not attempt exploitation. Service-path and service-permission explanations were checked against MITRE ATT&CK [unquoted paths](https://attack.mitre.org/techniques/T1574/009/), [service binaries](https://attack.mitre.org/techniques/T1574/010/), and [service registry permissions](https://attack.mitre.org/techniques/T1574/011/). Installer-policy behavior follows Microsoft's [AlwaysInstallElevated documentation](https://learn.microsoft.com/en-us/windows/win32/msi/alwaysinstallelevated).
 
@@ -97,6 +113,8 @@ Tests load function definitions and synthetic inputs only; they do not execute h
 ~~~powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Assessment.ps1
 pwsh -NoProfile -File .\tests\Test-Assessment.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tests\Test-Verification.ps1
+pwsh -NoProfile -File .\tests\Test-Verification.ps1
 ~~~
 
 The test command's execution-policy override is limited to that process. Tests generate **tests/artifacts/sample-report.html**, **empty-report.html**, and synthetic JSON. Open the sample report to inspect the report design without assessing a machine.
