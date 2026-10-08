@@ -1,5 +1,9 @@
 HostSecurityReport/
+TLSReport/
 tests/artifacts/
 
 # Optional upstream security reference; not required at runtime.
 reference/winPEAS.ps1.txt
+
+# Local TLS formatting reference contains captured server/cookie data.
+reference/testssl_output.txt

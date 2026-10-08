@@ -1,14 +1,14 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 param(
     [string]$ProjectRoot=(Split-Path $PSScriptRoot -Parent),
     [string]$OutputDirectory=(Join-Path $PSScriptRoot 'artifacts\verification')
 )
 $ErrorActionPreference='Stop'
 $tokens=$null;$parseErrors=$null
-$ast=[Management.Automation.Language.Parser]::ParseFile((Join-Path $ProjectRoot 'windows_security_check_v2.ps1'),[ref]$tokens,[ref]$parseErrors)
+$SourcePath=Join-Path $ProjectRoot 'windows_security_check_v3.ps1'
+$ast=[Management.Automation.Language.Parser]::ParseFile($SourcePath,[ref]$tokens,[ref]$parseErrors)
 if ($parseErrors.Count) {throw ($parseErrors | Out-String)}
 foreach ($definition in $ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst]},$true)) {. ([scriptblock]::Create($definition.Extent.Text))}
-. (Join-Path $ProjectRoot 'tools\VerificationRunner.ps1')
 $script:Assertions=0
 function Assert-True([bool]$Condition,[string]$Message) {
     $script:Assertions++
@@ -32,7 +32,7 @@ Assert-True ((Invoke-FindingVerification $update).Explanation -match 'contact an
 
 $file=Join-Path $OutputDirectory "file with ' quote.txt"
 [IO.File]::WriteAllText($file,('original bytes '+('x'*8000)))
-$data=[pscustomobject]@{TaskName="Task 'quoted";TaskPath="\Folder 'quoted\";TaskFile=$file;Action=$file;Name="Service 'quoted";Executable=$file;Directory=$OutputDirectory;RegistryPath='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run';Path=$OutputDirectory}
+$data=[pscustomobject]@{TaskName="Task 'quoted";TaskPath="\Folder 'quoted\";TaskFile=$file;Action=$file;Name="Service 'quoted";Executable=$file;Directory=$OutputDirectory;RegistryPath='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run';Path=$OutputDirectory;BinaryPath=$file;DllPath=(Join-Path $OutputDirectory 'fixture.dll');ProcessId=$PID}
 $titles=@('Scheduled task definition is broadly writable: fixture','Scheduled task executable is broadly writable: fixture','Scheduled task executable directory is broadly writable: fixture','Service executable is writable by a broad principal: fixture','Service executable directory is writable by a broad principal: fixture','Service registry configuration is writable by a broad principal: fixture','Potentially broad service-object permissions: fixture','Unquoted service executable path: fixture','Autorun executable is broadly writable: fixture','Autorun executable directory is broadly writable: fixture','Startup folder has broad write permissions: fixture','System PATH directory is broadly writable','AlwaysInstallElevated is enabled','Sensitive user right configured: fixture','Safe DLL search mode is disabled','Image File Execution Options debugger redirects are configured')
 foreach ($title in $titles) {
     $finding=[pscustomobject]@{Finding=$title;EvidenceData=$data;Command=$evil}
@@ -97,20 +97,20 @@ Assert-True ($aclHtml -notmatch 'issue-highlight[^>]*>[^\r\n]*FullControl' -and 
 Assert-True ($aclHtml -match 'issue-highlight[^>]*>[^\r\n]*Modify') 'Broad write allow ACE rights highlighted'
 $html | Set-Content -LiteralPath (Join-Path $OutputDirectory 'verification-transcripts.html') -Encoding UTF8
 
-# End-to-end helper test: isolated copy with a fixed synthetic query; no host scan.
-$fixtureRoot=Join-Path $OutputDirectory 'helper-fixture'
-$fixtureTools=Join-Path $fixtureRoot 'tools'
-New-Item -ItemType Directory -Path $fixtureTools -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'windows_security_check_v2.ps1') -Destination $fixtureRoot
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'tools\Update-ReportVerification.ps1') -Destination $fixtureTools
-$runnerText=Get-Content -LiteralPath (Join-Path $ProjectRoot 'tools\VerificationRunner.ps1') -Raw
-$runnerText+="`nfunction Get-ConfigurationVerificationPlan { param([string]`$Title); New-VerificationStep 'Synthetic integration query' " + (ConvertTo-PowerShellLiteral ('Write-Output '+(ConvertTo-PowerShellLiteral $long))) + " 'Complete synthetic response' }`n"
-$runnerText | Set-Content -LiteralPath (Join-Path $fixtureTools 'VerificationRunner.ps1') -Encoding UTF8
+# End-to-end single-file test: replace one query with fixed synthetic output.
+$fixtureRoot=Join-Path $OutputDirectory 'standalone-fixture'
+New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+$fixtureSource=Get-Content -LiteralPath $SourcePath -Raw
+$queryFunction=$ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-ConfigurationVerificationPlan'},$true)[0]
+$syntheticQuery="function Get-ConfigurationVerificationPlan { param([string]`$Title); New-VerificationStep 'Synthetic integration query' " + (ConvertTo-PowerShellLiteral ('Write-Output '+(ConvertTo-PowerShellLiteral $long))) + " 'Complete synthetic response' }"
+$fixtureSource=$fixtureSource.Replace($queryFunction.Extent.Text,$syntheticQuery)
+$helper=Join-Path $fixtureRoot 'windows_security_check_v3.ps1'
+$fixtureSource | Set-Content -LiteralPath $helper -Encoding UTF8
+Assert-True (-not (Test-Path -LiteralPath (Join-Path $fixtureRoot 'tools'))) 'Standalone fixture has no helper folder'
 $inputFile=Join-Path $fixtureRoot 'input.json'
 $report=[ordered]@{Metadata=[ordered]@{Host=$env:COMPUTERNAME;Version='2.3';AssessmentStarted='historical'};SeveritySummary=[ordered]@{Critical=0;High=1;Medium=0;Low=0;Informational=0};Findings=@([pscustomobject]@{Severity='High';Category='Synthetic';Finding='Synthetic finding';Status='Review';EvidenceSummary='historical evidence';EvidenceData=@{Value='historical'};Evidence='historical evidence';Command=$evil;VerificationSteps=$evil;HowToExploit='conditional';Recommendation='review'});CollectionErrors=@('historical error')}
 $report | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $inputFile -Encoding UTF8
 $sourceHash=(Get-FileHash -LiteralPath $inputFile).Hash
-$helper=Join-Path $fixtureTools 'Update-ReportVerification.ps1'
 & $helper -InputJson $inputFile -OutputDirectory (Join-Path $fixtureRoot 'commands-only')
 $commands=Get-Content -LiteralPath (Join-Path $fixtureRoot 'commands-only\input.json') -Raw | ConvertFrom-Json
 Assert-True ($null -eq $commands.Findings[0].VerificationResult) 'Default mode does not execute'
@@ -126,6 +126,48 @@ foreach ($extension in @('html','txt')) {
     Assert-True ($text -match 'Synthetic integration query' -and $text.Contains('0123456789'*1600)) "$extension retains full executed output"
 }
 Assert-True ((Get-Content -LiteralPath (Join-Path $fixtureRoot 'executed\input_SHA256.txt')).Count -eq 3) 'Manifest includes all artifacts'
+Assert-True ($executed.Metadata.VerificationExecution.EngineVersion -eq '3.1' -and $executed.Metadata.Version -eq '2.3') 'Verification version updated while historical scan version preserved'
+& $helper -InputJson $inputFile
+Assert-True (Test-Path -LiteralPath (Join-Path $fixtureRoot 'with_verification\input.html')) 'Default refresh output is beside the input'
+$blocked=$false
+try {& $helper -InputJson $inputFile -OutputDirectory $fixtureRoot -RunVerification} catch {$blocked=$_.Exception.Message -match 'separate from the original'}
+Assert-True ($blocked -and (Get-FileHash -LiteralPath $inputFile).Hash -eq $sourceHash) 'Input overwrite rejected'
+$blocked=$false
+try {& $helper -InputJson $inputFile -SkipWindowsUpdateScan} catch {$blocked=$true}
+Assert-True $blocked 'Scan-only switch cannot be combined with refresh mode'
+
+# Exercise scan orchestration with synthetic collector data, retaining the actual
+# scan initialization, verification hook and report-writing tail from v3.
+$collectorStart=$fixtureSource.IndexOf('$IsAdmin = Test-IsAdministrator')
+$hookStart=$fixtureSource.IndexOf('# Optional checks run against the just-collected findings')
+$fixtureJson=ConvertTo-PowerShellLiteral ($report | ConvertTo-Json -Depth 100 -Compress)
+$syntheticScan='$fixture='+$fixtureJson+" | ConvertFrom-Json`n"+@'
+$Report=[ordered]@{
+    Metadata=[ordered]@{Host=$env:COMPUTERNAME;Version='3.1';AssessmentStarted=$StartTime;AssessmentCompleted=(Get-Date)}
+    SeveritySummary=$fixture.SeveritySummary;Findings=@($fixture.Findings);CollectionErrors=@()
+}
+$SeveritySummary=$Report.SeveritySummary
+'@
+$scanSource=$fixtureSource.Substring(0,$collectorStart)+$syntheticScan+"`n"+$fixtureSource.Substring($hookStart)
+$scanScript=Join-Path $fixtureRoot 'synthetic-scan.ps1'
+$scanSource | Set-Content -LiteralPath $scanScript -Encoding UTF8
+$scanOnlyDir=Join-Path $fixtureRoot 'scan-only'
+& $scanScript -OutputDirectory $scanOnlyDir -SkipWindowsUpdateScan 6>$null
+$scanOnlyJson=Get-ChildItem -LiteralPath $scanOnlyDir -Filter '*.json' | Select-Object -First 1
+$scanOnly=Get-Content -LiteralPath $scanOnlyJson.FullName -Raw | ConvertFrom-Json
+Assert-True ($scanOnly.Metadata.Version -eq '3.1' -and $null -eq $scanOnly.Findings[0].VerificationResult) 'Fresh scan-only mode does not execute verification'
+$scanVerifiedDir=Join-Path $fixtureRoot 'scan-verified'
+& $scanScript -OutputDirectory $scanVerifiedDir -SkipWindowsUpdateScan -RunVerification -TimeoutSeconds 5 6>$null
+$scanVerifiedJson=Get-ChildItem -LiteralPath $scanVerifiedDir -Filter '*.json' | Select-Object -First 1
+$scanVerified=Get-Content -LiteralPath $scanVerifiedJson.FullName -Raw | ConvertFrom-Json
+Assert-True ($scanVerified.Metadata.VerificationExecution.EngineVersion -eq '3.1') 'Fresh dictionary metadata includes verification session'
+Assert-True ($scanVerified.Findings[0].VerificationResult.Steps[0].OutputData[0] -eq $long) 'Fresh scan executes verification before serializing reports'
+Assert-True (-not (Test-Path -LiteralPath $marker)) 'Fresh scan does not execute report-provided commands'
+$manifest=Get-ChildItem -LiteralPath $scanVerifiedDir -Filter '*_SHA256.txt' | Select-Object -First 1
+$manifestText=Get-Content -LiteralPath $manifest.FullName -Raw
+foreach ($artifact in Get-ChildItem -LiteralPath $scanVerifiedDir | Where-Object Extension -in @('.json','.html','.txt') | Where-Object Name -notlike '*_SHA256.txt') {
+    Assert-True ($manifestText.Contains((Get-FileHash -LiteralPath $artifact.FullName).Hash)) 'Scan hashes include verification output'
+}
 $report.Metadata.Host='different-host.invalid'
 $report | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $inputFile -Encoding UTF8
 $blocked=$false

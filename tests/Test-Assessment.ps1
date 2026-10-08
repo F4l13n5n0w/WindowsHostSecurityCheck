@@ -1,6 +1,6 @@
-param([string]$OutputDirectory = (Join-Path $PSScriptRoot 'artifacts'))
+param([string]$OutputDirectory = (Join-Path $PSScriptRoot 'artifacts'), [string]$SourceName='windows_security_check_v3.ps1')
 $ErrorActionPreference = 'Stop'
-$SourcePath = Join-Path (Split-Path $PSScriptRoot -Parent) 'windows_security_check_v2.ps1'
+$SourcePath = Join-Path (Split-Path $PSScriptRoot -Parent) $SourceName
 $Tokens = $null
 $ParseErrors = $null
 $Ast = [System.Management.Automation.Language.Parser]::ParseFile($SourcePath, [ref]$Tokens, [ref]$ParseErrors)
@@ -345,6 +345,7 @@ $Sample | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $Output
 # Exercise the actual report-writing tail against synthetic collector variables.
 $ComputerName='SYNTHETIC-HOST'; $StartTime=Get-Date; $IsAdmin=$false
 $SeveritySummary=$Sample.SeveritySummary; $AdditionalChecks=$Sample.AdditionalChecks
+$TimeoutSeconds=30; $RunVerification=$false
 $OS=$Sample.System.OperatingSystem; $Errors=$Sample.CollectionErrors
 $JsonFile=Join-Path $OutputDirectory 'integration-report.json'
 $TxtFile=Join-Path $OutputDirectory 'integration-report.txt'
